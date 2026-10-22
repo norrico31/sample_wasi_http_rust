@@ -1,70 +1,104 @@
-use wstd::http::{body::Bytes, Body, Request, Response, Result, StatusCode};
-use wstd::time::{Duration, Instant};
+use std::time::Instant;
+use wstd::http::{Body, Request, Response, Result, StatusCode};
 
 #[wstd::http_server]
 async fn main(req: Request<Body>) -> Result<Response<Body>> {
-    match req.uri().path_and_query().unwrap().as_str() {
-        "/wait" => wait(req).await,
-        "/echo" => echo(req).await,
-        "/echo-headers" => echo_headers(req).await,
-        "/echo-trailers" => echo_trailers(req).await,
-        "/" => home(req).await,
-        _ => not_found(req).await,
-    }
-}
+    let started = Instant::now();
 
-async fn home(_req: Request<Body>) -> Result<Response<Body>> {
-    // To send a single string as the response body:
-    Ok(Response::new("Hello, wasi:http/proxy world!\n".into()))
-}
+    let method = req.method().clone();
+    let path = req.uri().path().to_owned();
 
-async fn wait(_req: Request<Body>) -> Result<Response<Body>> {
-    // Get the time now
-    let now = Instant::now();
+    let result = match (method.as_str(), path.as_str()) {
+        ("GET", "/health") => {
+            json(StatusCode::OK, r#"{"status":"healthy"}"#)
+        }
 
-    // Sleep for one second.
-    wstd::task::sleep(Duration::from_secs(1)).await;
+        ("GET", "/users") => {
+            json(
+                StatusCode::OK,
+                r#"{"users":[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}]}"#,
+            )
+        }
 
-    // Compute how long we slept for.
-    let elapsed = Instant::now().duration_since(now).as_millis();
+        ("GET", "/users/1") => {
+            json(
+                StatusCode::OK,
+                r#"{"id":1,"name":"Alice","role":"admin"}"#,
+            )
+        }
 
-    Ok(Response::new(
-        format!("slept for {elapsed} millis\n").into(),
-    ))
-}
+        ("POST", "/users") => {
+            // Prototype only: static response; no database yet.
+            json(
+                StatusCode::CREATED,
+                r#"{"id":3,"name":"New User","message":"User created"}"#,
+            )
+        }
 
-async fn echo(req: Request<Body>) -> Result<Response<Body>> {
-    // Stream data from the req body to the response body.
-    let req_body = req.into_body();
-    Ok(Response::new(req_body))
-}
+        ("GET", "/users/999") => {
+            json(
+                StatusCode::NOT_FOUND,
+                r#"{"error":"User not found"}"#,
+            )
+        }
+        ("GET", "/test-error") => {
+            json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                r#"{"error":""intentional test error"}"#,
+            )
+        }
+        ("GET", "/test-trap") => {
+            panic!("intentional WASM trap test");
 
-async fn echo_headers(req: Request<Body>) -> Result<Response<Body>> {
-    let mut res = Response::builder();
-    *res.headers_mut().unwrap() = req.into_parts().0.headers;
-    Ok(res.body(().into()).expect("builder success"))
-}
+        }
+        ("GET", "/test-timeout") => {
+            loop {
+                std::hint::spin_loop();
+            }
+        }
+        ("GET", _) | ("POST", _) => {
+            json(
+                StatusCode::NOT_FOUND,
+                r#"{"error":"Route not found"}"#,
+            )
+        }
+        _ => {
+            json(
+                StatusCode::METHOD_NOT_ALLOWED,
+                r#"{"error":"Method not allowed"}"#,
+            )
+        }
 
-async fn echo_trailers(req: Request<Body>) -> Result<Response<Body>> {
-    use http_body_util::{BodyExt, Full};
-    let collected = req.into_body().into_boxed_body().collect().await?;
-    let (trailers, report) = if let Some(trailers) = collected.trailers() {
-        (
-            Some(Ok(trailers.clone())),
-            format!("recieved trailers: {trailers:?}"),
-        )
-    } else {
-        (None, "request had no trailers".to_owned())
     };
 
-    Ok(Response::new(Body::from_http_body(
-        Full::new(Bytes::from(report)).with_trailers(async { trailers }),
-    )))
+    let response = result?;
+    let status = response.status().as_u16();
+    let duration_us = started.elapsed().as_micros();
+    let outcome = if status >= 500 {
+        "server_error"   
+    } else if status >=  400 {
+        "client_error"
+    } else {
+        "success"
+    };
+
+    println!("observation method={} path={} status={} duration_us={} outcome={}",
+        method, path, status, duration_us, outcome
+        );
+
+    Ok(response)
 }
 
-async fn not_found(_req: Request<Body>) -> Result<Response<Body>> {
-    Ok(Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(().into())
-        .expect("builder succeeds"))
+fn json(
+    status: StatusCode,
+    body: &'static str,
+) -> Result<Response<Body>> {
+    Ok(
+        Response::builder()
+            .status(status)
+            .header("content-type", "application/json")
+            .body(body.into())
+            .expect("valid HTTP response"),
+    )
 }
+

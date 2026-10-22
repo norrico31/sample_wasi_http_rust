@@ -87,3 +87,4 @@ Apache-2.0 with LLVM Exception
 [wasi-http]: https://github.com/WebAssembly/wasi-http
 [wkg]: https://github.com/bytecodealliance/wasm-pkg-tools/tree/main/crates/wkg
 [wasmtime]: https://wasmtime.dev
+# sample_wasi_http_rust
